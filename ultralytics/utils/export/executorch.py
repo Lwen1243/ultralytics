@@ -18,7 +18,7 @@ def executorch_wrapper(model: torch.nn.Module) -> torch.nn.Module:
     for m in model.modules():
         if not isinstance(m, Pose):
             continue
-        m.kpts_decode = types.MethodType(partial(_executorch_kpts_decode, is_pose26=type(m) is Pose26),m)
+        m.kpts_decode = types.MethodType(partial(_executorch_kpts_decode, is_pose26=type(m) is Pose26), m)
     return model
 
 
@@ -69,12 +69,12 @@ def torch2executorch(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     pte_file = output_dir / file.with_suffix(".pte").name
-    
+
     et_program = to_edge_transform_and_lower(
         torch.export.export(model, (sample_input,)),
         partitioner=[XnnpackPartitioner()],
     ).to_executorch()
-    
+
     pte_file.write_bytes(et_program.buffer)
 
     if metadata is not None:

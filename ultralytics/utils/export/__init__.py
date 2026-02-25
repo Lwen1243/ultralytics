@@ -5,4 +5,13 @@ from .executorch import torch2executorch
 from .imx import torch2imx
 from .tensorflow import keras2pb, onnx2saved_model, pb2tfjs, tflite2edgetpu
 
-__all__ = ["keras2pb", "onnx2engine", "onnx2saved_model", "pb2tfjs", "tflite2edgetpu", "torch2executorch", "torch2imx", "torch2onnx"]
+__all__ = [
+    "keras2pb",
+    "onnx2engine",
+    "onnx2saved_model",
+    "pb2tfjs",
+    "tflite2edgetpu",
+    "torch2executorch",
+    "torch2imx",
+    "torch2onnx",
+]
