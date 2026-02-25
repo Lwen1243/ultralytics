@@ -123,9 +123,9 @@ from ultralytics.utils.export import (
     onnx2saved_model,
     pb2tfjs,
     tflite2edgetpu,
+    torch2executorch,
     torch2imx,
     torch2onnx,
-    torch2executorch,
 )
 from ultralytics.utils.files import file_size
 from ultralytics.utils.metrics import batch_probiou
