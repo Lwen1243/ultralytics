@@ -62,19 +62,15 @@ def torch2executorch(
 
     LOGGER.info(f"\n{prefix} starting export with ExecuTorch {executorch_version.__version__}...")
 
-    model = executorch_wrapper(model)
-
     file = Path(file)
     output_dir = Path(str(file).replace(file.suffix, "_executorch_model"))
     output_dir.mkdir(parents=True, exist_ok=True)
 
     pte_file = output_dir / file.with_suffix(".pte").name
-
     et_program = to_edge_transform_and_lower(
         torch.export.export(model, (sample_input,)),
         partitioner=[XnnpackPartitioner()],
     ).to_executorch()
-
     pte_file.write_bytes(et_program.buffer)
 
     if metadata is not None:
