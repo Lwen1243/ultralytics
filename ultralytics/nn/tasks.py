@@ -12,6 +12,7 @@ import torch.nn as nn
 
 from ultralytics.nn.autobackend import check_class_names
 from ultralytics.nn.modules import (
+    A3FPN,
     AIFI,
     C1,
     C2,
@@ -181,11 +182,18 @@ class BaseModel(torch.nn.Module):
             if profile:
                 self._profile_one_layer(m, x, dt)
             x = m(x)  # run
-            y.append(x if m.i in self.save else None)  # save output
+            # Handle modules that output a list/tuple (e.g., A3FPN neck)
+            if isinstance(x, (list, tuple)):
+                for feat in x:
+                    y.append(feat if m.i in self.save else None)
+            else:
+                y.append(x if m.i in self.save else None)  # save output
             if visualize:
                 feature_visualization(x, m.type, m.i, save_dir=visualize)
             if m.i in embed:
-                embeddings.append(torch.nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1))  # flatten
+                # For multi-output modules, use the first output for embedding
+                feat_for_embed = x[0] if isinstance(x, (list, tuple)) else x
+                embeddings.append(torch.nn.functional.adaptive_avg_pool2d(feat_for_embed, (1, 1)).squeeze(-1).squeeze(-1))
                 if m.i == max_idx:
                     return torch.unbind(torch.cat(embeddings, 1), dim=0)
         return x
@@ -787,6 +795,90 @@ class ClassificationModel(BaseModel):
     def init_criterion(self):
         """Initialize the loss criterion for the ClassificationModel."""
         return v8ClassificationLoss()
+
+
+class A3FPNDetectionModel(DetectionModel):
+    """YOLO detection model with A3-FPN (Asymptotic Content-Aware Pyramid Attention Network) neck.
+
+    This class extends DetectionModel to support A3-FPN as a replacement for the standard
+    PANet/FPN neck. The A3-FPN module outputs multiple feature maps at different scales,
+    which requires special handling in the forward pass.
+
+    Attributes:
+        nc (int): Number of classes for detection.
+
+    Methods:
+        _predict_once: Override to handle A3-FPN multi-scale outputs.
+        init_criterion: Initialize the loss criterion (standard v8 detection loss).
+
+    Examples:
+        Initialize a YOLOv8 + A3-FPN model
+        >>> model = A3FPNDetectionModel("yolov8-a3fpn.yaml", ch=3, nc=80)
+        >>> results = model.predict(image_tensor)
+    """
+
+    def __init__(self, cfg="yolov8-a3fpn.yaml", ch=3, nc=None, verbose=True):
+        """Initialize the A3FPNDetectionModel.
+
+        Args:
+            cfg (str | dict): Configuration file name or path.
+            ch (int): Number of input channels.
+            nc (int, optional): Number of classes.
+            verbose (bool): Print additional information during initialization.
+        """
+        super().__init__(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
+
+    def _predict_once(self, x, profile=False, visualize=False, embed=None):
+        """Perform a forward pass, handling A3-FPN multi-scale outputs.
+
+        The A3-FPN neck outputs a list of feature maps (one per scale). This method
+        expands these into the output list so subsequent layers (like Detect) can
+        reference them by their individual indices.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+            profile (bool): Print computation time per layer.
+            visualize (bool): Save feature maps.
+            embed (list, optional): Layer indices to return embeddings from.
+
+        Returns:
+            (torch.Tensor): Model predictions.
+        """
+        y, dt, embeddings = [], [], []  # outputs
+        embed = frozenset(embed) if embed is not None else {-1}
+        max_idx = max(embed)
+        for m in self.model:
+            if m.f != -1:  # if not from previous layer
+                x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
+            if profile:
+                self._profile_one_layer(m, x, dt)
+            x = m(x)  # run
+            if isinstance(m, A3FPN):
+                # A3-FPN outputs a list of multi-scale features; store each separately
+                # so subsequent layers can reference them by index
+                for feat in x:
+                    y.append(feat)
+            else:
+                y.append(x if m.i in self.save else None)  # save output
+            if visualize:
+                feature_visualization(x, m.type, m.i, save_dir=visualize)
+            if m.i in embed:
+                if isinstance(x, list):
+                    # For A3FPN, use the first output feature for embedding
+                    embeddings.append(
+                        torch.nn.functional.adaptive_avg_pool2d(x[0], (1, 1)).squeeze(-1).squeeze(-1)
+                    )
+                else:
+                    embeddings.append(
+                        torch.nn.functional.adaptive_avg_pool2d(x, (1, 1)).squeeze(-1).squeeze(-1)
+                    )
+                if m.i == max_idx:
+                    return torch.unbind(torch.cat(embeddings, 1), dim=0)
+        return x
+
+    def init_criterion(self):
+        """Initialize the loss criterion for the A3FPNDetectionModel."""
+        return v8DetectionLoss(self)
 
 
 class RTDETRDetectionModel(DetectionModel):
@@ -1806,6 +1898,13 @@ def parse_model(d, ch, verbose=True):
             args.insert(1, [ch[x] for x in f])  # channels as second arg
         elif m is RTDETRDecoder:  # special case, channels arg must be passed in index 1
             args.insert(1, [ch[x] for x in f])
+        elif m is A3FPN:  # A3-FPN neck: outputs multiple feature maps
+            # args format in YAML: [out_channels, num_outs] e.g., [256, 3]
+            in_chs = [ch[x] for x in f]
+            num_outs = args[1] if len(args) > 1 and isinstance(args[1], int) else len(in_chs)
+            out_ch = args[0] if isinstance(args[0], int) else 256
+            args = [in_chs, out_ch, num_outs]
+            c2 = out_ch
         elif m is CBLinear:
             c2 = args[0]
             c1 = ch[f]
@@ -1829,7 +1928,13 @@ def parse_model(d, ch, verbose=True):
         layers.append(m_)
         if i == 0:
             ch = []
-        ch.append(c2)
+        # A3FPN outputs multiple feature maps; track each one in ch
+        if m is A3FPN:
+            num_outs_a3 = args[2] if len(args) > 2 and isinstance(args[2], int) else len(f) if isinstance(f, list) else 1
+            for _ in range(num_outs_a3):
+                ch.append(c2)
+        else:
+            ch.append(c2)
     return torch.nn.Sequential(*layers), sorted(save)
 
 

@@ -17,6 +17,14 @@ Examples:
     >>> subprocess.run(f"onnxslim {f} {f} && open {f}", shell=True, check=True)  # pip install onnxslim
 """
 
+from .a3fpn import (
+    A3FPN,
+    A3FPNBody,
+    Fusion,
+    Reassemble,
+    Resampler,
+    SampleBlock,
+)
 from .block import (
     C1,
     C2,
@@ -108,6 +116,8 @@ from .transformer import (
 )
 
 __all__ = (
+    "A3FPN",
+    "A3FPNBody",
     "AIFI",
     "C1",
     "C2",
